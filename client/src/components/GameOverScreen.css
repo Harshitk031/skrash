@@ -1,0 +1,45 @@
+.game-over-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.game-over-modal {
+  background-color: white;
+  padding: 20px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.winners-list {
+  margin-top: 20px;
+}
+
+.winner-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px;
+  border-bottom: 1px solid #ccc;
+}
+
+.winner-item:last-child {
+  border-bottom: none;
+}
+
+.winner-rank {
+  font-weight: bold;
+}
+
+.winner-name {
+  font-style: italic;
+}
+
+.winner-score {
+  color: green;
+}

@@ -1,0 +1,22 @@
+.drawing-canvas {
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: white;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+.drawing-canvas:focus {
+  outline: none;
+}
+
+/* Responsive canvas */
+@media (max-width: 768px) {
+  .drawing-canvas {
+    border-width: 1px;
+    border-radius: 4px;
+  }
+}
