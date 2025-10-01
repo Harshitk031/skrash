@@ -340,7 +340,7 @@ io.on('connection', socket => {
             const scoreBoard = game.players.map(p => [p.playerName, p.score]);
             scoreBoard.sort((a, b) => b[1] - a[1]);
             
-            await Game.updateOne({ roomCode }, { $set: { scoreBoard } });
+            await Game.findOneAndUpdate({ roomCode }, { $set: { players: game.players, scoreBoard } });
 
             io.to(roomCode).emit('scoreBoard', scoreBoard);
             io.to(roomCode).emit('roundComplete', {
