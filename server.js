@@ -1,36 +1,30 @@
 const express = require('express');
-const Socket = require('socket.io');
 const app = express();
 const server = require('http').Server(app);
 const io = require('socket.io')(server);
 const path = require('path');
+const connectDB = require('./config/db');
+const Game = require('./models/Game');
 
-var playerIndex = 0;
-var roundNumber = 0;
-var totalRounds = 4; // 4 rounds per game
-var hasGameStarted = false;
-var wordToDraw = null;
-var cancelChooseWordTimer;
+require('dotenv').config();
+
 var chooseWordTime = 20; // in seconds
 var drawTime = 80; // in seconds
-var wordOptions = [];
-var chosenPlayer;
-var guessersList = [];
-var scoreBoard = [];
-var cancelDrawTimer = null;
-var drawTimerID = null;
-var chatAdminPWD = "admin";
 
-// Private room management
-var privateRooms = new Map(); // roomCode -> roomData
-var publicRoom = {
-  players: [],
-  hasGameStarted: false,
-  wordToDraw: null,
-  chosenPlayer: null,
-  guessersList: [],
-  scoreBoard: []
-};
+// Per-room state to avoid cross-room interference
+const roomState = new Map();
+function getRoomState(roomCode) {
+    if (!roomState.has(roomCode)) {
+        roomState.set(roomCode, {
+            cancelChooseWordTimer: null,
+            chooseTimerID: null,
+            cancelDrawTimer: null,
+            drawTimerID: null,
+            wordOptions: []
+        });
+    }
+    return roomState.get(roomCode);
+}
 
 // Serve static files from the React app
 app.use(express.static(path.join(__dirname, 'client', 'build')));
@@ -42,41 +36,13 @@ function random_word_gen() {
     return wordlist[Math.floor(Math.random() * wordlist.length)]
 }
 
-let players = [];
 const socs = new Set();
-
-class Player {
-    constructor(playerName, socID, isRoomOwner = false) {
-        this.playerName = playerName;
-        this.socID = socID;
-        this.isRoomOwner = isRoomOwner;
-        this.score = 0;
-    }
-
-    getPlayerSocID() {
-        return this.socID;
-    }
-
-    getPlayerName() {
-        return this.playerName;
-    }
-
-    getIsRoomOwner() {
-        return this.isRoomOwner;
-    }
-
-    setScore(val) {
-        this.score = val;
-    }
-
-    getScore() {
-        return this.score;
-    }
-}
-
 playersList = {}
 var soc;
 var uniqueName = true;
+// Track DB connection status
+let isDbConnected = false;
+
 // When a client connects to the server
 io.on('connection', socket => {
     soc = socket;
@@ -84,413 +50,381 @@ io.on('connection', socket => {
     socs.add(socket);
 
     // Handle room creation and joining
-    socket.on('createRoom', (data) => {
+    socket.on('createRoom', async (data) => {
         const { playerName, roomCode } = data;
-        // For now, just treat as regular player join
-        // TODO: Implement proper room management
-        socket.emit('playerName', playerName);
+        try {
+            if (!isDbConnected) {
+                return socket.emit('serverError', 'Database not connected. Please try again in a moment.');
+            }
+            let game = await Game.findOne({ roomCode });
+            if (game) {
+                return socket.emit('serverError', 'Room already exists');
+            }
+            game = new Game({
+                roomCode,
+                players: [{
+                    playerName,
+                    socID: socket.id,
+                    isRoomOwner: true,
+                }],
+            });
+            await game.save();
+            socket.join(roomCode);
+            socket.emit('roomCreated', game);
+        } catch (err) {
+            console.error(err.message);
+            socket.emit('serverError', 'Server error');
+        }
     });
 
-    socket.on('joinRoom', (data) => {
+    socket.on('joinRoom', async (data) => {
         const { playerName, roomCode } = data;
-        // For now, just treat as regular player join
-        // TODO: Implement proper room management
-        socket.emit('playerName', playerName);
-    });
-
-    socket.on('playerName', pName => {
-        players.forEach(p => {
-            if (p.getPlayerName() == pName) {
-                socket.disconnect();
-                uniqueName = false;
-                return;
+        try {
+            if (!isDbConnected) {
+                return socket.emit('serverError', 'Database not connected. Please try again in a moment.');
             }
-        });
-        if (!uniqueName) {
-            uniqueName = true;
-            return;
-        }
-        if (players.length == 0 && uniqueName) {
-            let newPlayerJoined = new Player(pName, socket, true);
-            socket.emit('hostPlayer', true);
-            players.push(newPlayerJoined);
-        } else {
-            if (uniqueName) {
-                let newPlayerJoined = new Player(pName, socket);
-                players.push(newPlayerJoined);
+            const player = {
+                playerName,
+                socID: socket.id,
+            };
+            const game = await Game.findOneAndUpdate(
+                { roomCode },
+                { $push: { players: player } },
+                { new: true }
+            );
+
+            if (!game) {
+                return socket.emit('serverError', 'Room not found');
             }
-        }
-
-        playersList[pName] = 0;
-        socket.broadcast.emit('newPlayerJoined', pName);
-        socket.emit('playersList', JSON.stringify(playersList));
-
-        uniqueName = true;
-    });
-
-    if (hasGameStarted) {
-        socket.emit('gameStarted');
-    }
-
-    socket.emit('welcom', "welcome to skribbl");
-
-    socket.on('position', position => {
-        // Broadcast the message to all clients with proper format
-        socket.broadcast.emit('otherPOS', {
-            x: position.x,
-            y: position.y,
-            lastX: position.lastX || position.x,
-            lastY: position.lastY || position.y,
-            brushsize: position.brushsize,
-            color: position.color || '#000000'
-        });
-    });
-
-    socket.on('startPaint', paint => {
-        socket.broadcast.emit('startPaint', paint);
-    });
-
-
-
-    socket.on('startGame', () => {
-        socket.broadcast.emit('gameStarted');
-        hasGameStarted = true;
-        // Reset game state for new game
-        playerIndex = 0;
-        roundNumber = 0;
-        gameStart();
-    });
-
-    socket.on('penColor', hexValue => {
-        io.sockets.emit('penColor', hexValue);
-    });
-
-    socket.on('clearCanvas', () => {
-        io.sockets.emit('clearCanvas');
-    });
-
-    socket.on('vote', status => {
-        io.sockets.emit('vote', status);
-    });
-
-
-    socket.on('chosenWord', cWord => {
-        console.log(`Player ${socket.playerName || 'unknown'} chose word: ${cWord}`);
-        wordToDraw = cWord;
-        io.sockets.emit('wordCount', cWord.length);
-        
-        // Cancel the word selection timer since a word was chosen
-        if (cancelChooseWordTimer) {
-            cancelChooseWordTimer();
-            cancelChooseWordTimer = null;
-        }
-    });
-
-
-
-    socket.on('updateText', receivedMsg => {
-        // Check if this is an admin command
-        if (receivedMsg[1].includes("//admin")) {
-            adminControl(receivedMsg[1]);
-            return; // Exit early for admin commands
-        }
-
-        // Handle word guessing logic
-        if (wordToDraw != null && players.length > 1) {
-            var formattedWord = receivedMsg[1].toLowerCase().trim();
-            var formattedGuessWord = wordToDraw.toLowerCase().trim();
             
-            // Check if player already guessed correctly
-            if (guessersList.includes(receivedMsg[0])) {
-                // Player already guessed, just show their message
-                const message = {
+            socket.join(roomCode);
+            
+            if (game.hasGameStarted) {
+                const gameState = {
+                    currentDrawer: game.chosenPlayer,
+                    wordHint: game.wordToDraw ? game.wordToDraw.replace(/./g, '_ ') : '',
+                    round: game.roundNumber,
+                    players: game.players.map(p => ({ name: p.playerName, score: p.score })),
+                };
+                socket.emit('gameStateUpdate', gameState);
+            }
+            
+            io.to(roomCode).emit('playerListUpdate', game.players);
+        } catch (err) {
+            console.error(err.message);
+            socket.emit('serverError', 'Server error');
+        }
+    });
+
+
+    socket.emit('welcome', "welcome to skribbl");
+
+    socket.on('position', data => {
+        socket.to(data.roomCode).emit('otherPOS', data);
+    });
+
+    // Removed unused startPaint event; drawing sync happens via 'position'
+
+
+
+    socket.on('startGame', async (roomCode) => {
+        try {
+            let game = await Game.findOne({ roomCode });
+            if (!game) {
+                return socket.emit('serverError', 'Game not found');
+            }
+
+            // Enforce host-only start and minimum players
+            const me = game.players.find(p => p.socID === socket.id);
+            if (!me || !me.isRoomOwner) {
+                return socket.emit('serverError', 'Only the host can start the game');
+            }
+            if (game.players.length < 2) {
+                return socket.emit('serverError', 'At least 2 players are required to start');
+            }
+
+            const updatedGame = await Game.findOneAndUpdate(
+                { roomCode },
+                { $set: { hasGameStarted: true, playerIndex: 0, roundNumber: 0 } },
+                { new: true }
+            );
+
+            io.to(roomCode).emit('gameStarted', updatedGame);
+            gameStart(roomCode);
+        } catch (err) {
+            console.error(err.message);
+            socket.emit('serverError', 'Server error');
+        }
+    });
+
+    // Clear canvas for a room
+    socket.on('clearCanvas', ({ roomCode }) => {
+        if (!roomCode) return;
+        io.to(roomCode).emit('clearCanvas');
+    });
+
+    // Handle votes (like/dislike drawing) scoped to room
+    socket.on('vote', ({ roomCode, playerName, direction }) => {
+        if (!roomCode || !playerName || !direction) return;
+        io.to(roomCode).emit('vote', { playerName, direction });
+    });
+
+
+    socket.on('chosenWord', async ({ roomCode, word }) => {
+        try {
+            const game = await Game.findOneAndUpdate(
+                { roomCode },
+                { $set: { wordToDraw: word } },
+                { new: true }
+            );
+            if (!game) return;
+
+            io.to(roomCode).emit('wordCount', word.length);
+
+            const state = getRoomState(roomCode);
+            if (state.cancelChooseWordTimer) {
+                state.cancelChooseWordTimer();
+                state.cancelChooseWordTimer = null;
+            }
+        } catch (err) {
+            console.error(err.message);
+        }
+    });
+
+    socket.on('updateText', async ({ roomCode, playerName, message }) => {
+        try {
+            let game = await Game.findOne({ roomCode });
+            if (!game || !game.wordToDraw) return;
+
+            const formattedWord = message.toLowerCase().trim();
+            const formattedGuessWord = game.wordToDraw.toLowerCase().trim();
+
+            if (game.guessersList.includes(playerName)) {
+                const chatMessage = {
                     id: Date.now(),
-                    playerName: receivedMsg[0],
-                    content: receivedMsg[1],
+                    playerName,
+                    content: message,
                     timestamp: new Date().toLocaleTimeString(),
                     color: 'gray'
                 };
-                io.sockets.emit('chatContent', message);
-                return;
+                return io.to(roomCode).emit('chatContent', chatMessage);
             }
 
-            // Check for exact match
             if (formattedGuessWord === formattedWord) {
-                io.sockets.emit('correctGuess', [receivedMsg[0], wordToDraw]);
-                guessersList.push(receivedMsg[0]);
-                
-                // The client will show a "guessed the word" message.
-                // No need to send the word to chat.
-                
-                // Check if all players guessed
-                if (guessersList.length === players.length - 1) {
-                    io.sockets.emit('allGuessed');
-                    // All players have guessed, so end the drawing timer early.
-                    if (cancelDrawTimer) {
-                        clearTimeout(drawTimerID); // Clear the timeout
-                        cancelDrawTimer(); // Resolve the promise
-                        cancelDrawTimer = null; // Prevent multiple calls
+                const updatedGame = await Game.findOneAndUpdate(
+                    { roomCode },
+                    { $push: { guessersList: playerName } },
+                    { new: true }
+                );
+                if (!updatedGame) return;
+
+                io.to(roomCode).emit('correctGuess', [playerName, updatedGame.wordToDraw]);
+
+                if (updatedGame.guessersList.length === updatedGame.players.length - 1) {
+                    io.to(roomCode).emit('allGuessed');
+                    const state = getRoomState(roomCode);
+                    if (state && state.cancelDrawTimer) {
+                        if (state.drawTimerID) clearTimeout(state.drawTimerID);
+                        state.cancelDrawTimer();
+                        state.cancelDrawTimer = null;
                     }
                 }
                 return;
             }
 
-            // Check for close match (contains the word but not exact)
-            if (wordToDraw && receivedMsg[1].toLowerCase().includes(wordToDraw.toLowerCase()) && 
-                receivedMsg[1].length <= wordToDraw.length + 3) {
-                const message = {
+            if (message.toLowerCase().includes(formattedGuessWord)) {
+                const chatMessage = {
                     id: Date.now(),
                     playerName: "Server",
-                    content: `${receivedMsg[0]}'s guess is close`,
+                    content: `${playerName}'s guess is close`,
                     timestamp: new Date().toLocaleTimeString(),
                     color: 'orange'
                 };
-                io.sockets.emit('chatContent', message);
-                return;
+                return io.to(roomCode).emit('chatContent', chatMessage);
             }
-        }
 
-        // Regular chat message
-        const message = {
-            id: Date.now(),
-            playerName: receivedMsg[0],
-            content: receivedMsg[1],
-            timestamp: new Date().toLocaleTimeString(),
-            color: 'black'
-        };
-        console.log(`Chat message from ${receivedMsg[0]}: ${receivedMsg[1]}`);
-        console.log('Sending chat message:', message);
-        io.sockets.emit('chatContent', message);
+            const chatMessage = {
+                id: Date.now(),
+                playerName,
+                content: message,
+                timestamp: new Date().toLocaleTimeString(),
+                color: 'black'
+            };
+            io.to(roomCode).emit('chatContent', chatMessage);
+
+        } catch (err) {
+            console.error(err.message);
+        }
     });
 
-    function adminControl(command) {
-        var commands = command.split(" ");
-        if (commands[1] == chatAdminPWD) {
-            if (commands[2] == "kickall") {
-                socs.forEach(s => {
-                    s.disconnect(true);
-                });
-                console.log(">Admin kicked all players.");
-            } else if (commands[2] == "kick") {
-                players.forEach(p => {
-                    if (p.getPlayerName() == commands[3]) {
-                        socs.forEach(soc => {
-                            if (p.getPlayerSocID().id == soc.id) {
-                                soc.disconnect();
-                                io.sockets.emit('chatContent', {
-                    id: Date.now(),
-                    playerName: "Server",
-                    content: `${commands[3]} is kicked 🦵🏻`,
-                    timestamp: new Date().toLocaleTimeString(),
-                    color: 'red'
-                });
-                                console.log(`>Admin kicked ${commands[3]}`);
-                            }
-                        });
-                    }
-                });
-            } else if (commands[2] == "givePoints") {
-                players.forEach(p => {
-                    if (p.getPlayerName() == commands[3]) {
-                        p.setScore(parseInt(commands[4]));
-                        console.log(`>Admin added ${commands[4]}Points to ${commands[3]}`);
-                    }
-                });
-            } else if (commands[2] == "setdrawtime") {
-                var oldDrawTime = drawTime;
-                drawTime = parseInt(commands[3]);
-                console.log(`>Admin set draw time from ${oldDrawTime} to ${commands[3]}`);
-            } else if (commands[2] == "setchoosetime") {
-                var oldChooseTime = chooseWordTime;
-                chooseWordTime = parseInt(commands[3]);
-                console.log(`>Admin set time to choose word from ${oldChooseTime} to ${commands[3]}`);
-            } else if (commands[2] == "restart") {
-                socket.broadcast.emit('gameStarted');
-                hasGameStarted = true;
-                gameStart();
-            }
-        }
-    }
+    // Removed legacy admin controls and unused globals
 
     // When the client disconnects
-    socket.on('disconnect', () => {
-        //delete (users[socket.id])
-        console.log('A user disconnected: ', socket.id);
-        players.forEach(function (p, i) {
-            if (p.getPlayerSocID().id == socket.id) {
-                if (chosenPlayer == p.getPlayerName()) {
-                    if (cancelChooseWordTimer != null && cancelDrawTimer != null) {
-                        cancelChooseWordTimer();
-                        cancelDrawTimer();
-                        console.log("Drawing player left...");
+    socket.on('disconnect', async () => {
+        try {
+            let game = await Game.findOne({ "players.socID": socket.id });
+            if (!game) return;
 
-                    }
-                }
+            const player = game.players.find(p => p.socID === socket.id);
+            if (!player) return;
 
-                if (p.isRoomOwner) {
-                    hasGameStarted = false;
-                    socs.forEach(s => {
-                        s.disconnect(true);
-                    });
-                    if (cancelChooseWordTimer != null && cancelDrawTimer != null) {
-                        cancelChooseWordTimer();
-                        cancelDrawTimer();
-                    }
-                }
-                socket.broadcast.emit('playerLeft', p.getPlayerName());
-                players.splice(i, 1);
-                delete playersList[p.getPlayerName()];
+            if (player.isRoomOwner) {
+                await Game.deleteOne({ roomCode: game.roomCode });
+                io.to(game.roomCode).emit('roomClosed');
+            } else {
+                const updatedGame = await Game.findOneAndUpdate(
+                    { roomCode: game.roomCode },
+                    { $pull: { players: { socID: socket.id } } },
+                    { new: true }
+                );
+                io.to(game.roomCode).emit('playerLeft', updatedGame);
             }
-        });
+        } catch (err) {
+            console.error(err.message);
+        }
     });
 
 
 
 
-    async function Fun() {
-        cancelChooseWordTimer = null;
-        cancelDrawTimer = null;
-        guessersList = [];
-        scoreBoard = [];
-        
-        // Start word selection phase
-        console.log(`Starting word selection for ${chosenPlayer}`);
-        io.sockets.emit('chooseStart', chooseWordTime);
-        
-        // Wait for word selection timer
-        await chooseWordtimer();
-        io.sockets.emit('chooseEnd');
-        
-        // Only auto-select word if none was chosen
-        if (wordToDraw == null) {
-            wordToDraw = wordOptions[0];
-            console.log("AUTO CHOSEN WORD: ", wordToDraw);
-            io.sockets.emit('wordCount', wordToDraw.length);
-            io.sockets.emit('chosenWord', [wordToDraw, chosenPlayer]);
-        }
-        
-        // Start drawing phase
-        console.log(`Starting drawing phase with word: ${wordToDraw}`);
-        io.sockets.emit("clearCanvas"); // Clear canvas for new round
-        io.sockets.emit("drawStart", drawTime);
-        await Drawingtimer();
-        io.sockets.emit('drawEnd');
-        function calculateScore(playerIndex) {
-            if (playerIndex === 0) {
-                return 300;
-            } else {
+    async function Fun(roomCode) {
+        try {
+            await Game.updateOne({ roomCode }, { $set: { guessersList: [], scoreBoard: [], wordToDraw: null } });
+
+            io.to(roomCode).emit('chooseStart', chooseWordTime);
+            await chooseWordtimer(roomCode);
+            io.to(roomCode).emit('chooseEnd');
+
+            let game = await Game.findOne({ roomCode });
+            const state = getRoomState(roomCode);
+            if (game.wordToDraw == null) {
+                game = await Game.findOneAndUpdate(
+                    { roomCode },
+                    { $set: { wordToDraw: state.wordOptions[0] } },
+                    { new: true }
+                );
+                io.to(roomCode).emit('wordCount', game.wordToDraw.length);
+                const chosenPlayerObjTmp = game.players.find(p => p.playerName === game.chosenPlayer);
+                if (chosenPlayerObjTmp) {
+                    io.to(chosenPlayerObjTmp.socID).emit('chosenWord', [game.wordToDraw, game.chosenPlayer]);
+                }
+            }
+
+            io.to(roomCode).emit("clearCanvas");
+            io.to(roomCode).emit("drawStart", drawTime);
+            await Drawingtimer(roomCode);
+            io.to(roomCode).emit('drawEnd');
+
+            game = await Game.findOne({ roomCode });
+            function calculateScore(playerIndex) {
+                if (playerIndex === 0) return 300;
                 const baseScore = 290;
                 const scoreReduction = (playerIndex - 1) * 10;
                 return baseScore - scoreReduction;
             }
-        }
-        function reduceScoreOnTime() {
 
-        }
-
-        for (let i = 0; i < guessersList.length; i++) {
-            const player = guessersList[i];
-            const score = calculateScore(i);
-            players.forEach(element => {
-                if (element.getPlayerName() == guessersList[i]) {
-                    var s = element.getScore() + score;
-                    element.setScore(s);
-                    scoreBoard.push([element.getPlayerName(), element.getScore()]);
+            for (let i = 0; i < game.guessersList.length; i++) {
+                const playerName = game.guessersList[i];
+                const score = calculateScore(i);
+                const player = game.players.find(p => p.playerName === playerName);
+                if (player) {
+                    player.score += score;
                 }
-                if (element.getPlayerName() == chosenPlayer && guessersList.length != 0) {
-                    scoreBoard.push([chosenPlayer, element.getScore() + 100]);
-                }
+            }
 
+            const chosenPlayerObj = game.players.find(p => p.playerName === game.chosenPlayer);
+            if (chosenPlayerObj && game.guessersList.length > 0) {
+                chosenPlayerObj.score += 100;
+            }
+
+            const scoreBoard = game.players.map(p => [p.playerName, p.score]);
+            scoreBoard.sort((a, b) => b[1] - a[1]);
+            
+            await Game.updateOne({ roomCode }, { $set: { scoreBoard } });
+
+            io.to(roomCode).emit('scoreBoard', scoreBoard);
+            io.to(roomCode).emit('roundComplete', {
+                roundPlayer: game.chosenPlayer,
+                word: game.wordToDraw,
+                guessers: game.guessersList,
+                scores: game.scoreBoard,
+                roundNumber: game.roundNumber + 1,
+                totalRounds: game.totalRounds
             });
 
+            setTimeout(() => {
+                gameStart(roomCode);
+            }, 3000);
 
-
-
+        } catch (err) {
+            console.error(err.message);
         }
-        io.sockets.emit('scoreBoard', scoreBoard);
         
-        // Emit round complete event
-        io.sockets.emit('roundComplete', {
-            roundPlayer: chosenPlayer,
-            word: wordToDraw,
-            guessers: guessersList,
-            scores: scoreBoard,
-            roundNumber: roundNumber + 1,
-            totalRounds: totalRounds
-        });
-        
-        // Continue to next round after a short delay
-        setTimeout(() => {
-            console.log("Starting next round...");
-            gameStart();
-        }, 3000); // 3 second delay to show scores
-
-
-        function chooseWordtimer() {
+        function chooseWordtimer(roomCode) {
+            const state = getRoomState(roomCode);
             return new Promise((res) => {
-                cancelChooseWordTimer = res;
-                var t = setTimeout(() => {
+                state.cancelChooseWordTimer = res;
+                const t = setTimeout(() => {
                     console.log("Word selection time expired");
                     res();
                     clearTimeout(t);
                 }, (chooseWordTime * 1000) + 10);
+                state.chooseTimerID = t;
             });
         }
 
-        function Drawingtimer() {
+        function Drawingtimer(roomCode) {
+            const state = getRoomState(roomCode);
             return new Promise((res) => {
-                cancelDrawTimer = res;
-                var t = drawTimerID = setTimeout(() => {
+                state.cancelDrawTimer = res;
+                const t = setTimeout(() => {
                     console.log("Drawing time expired");
                     res();
                     clearTimeout(t);
                 }, (drawTime * 1000) + 10);
+                state.drawTimerID = t;
             });
         }
-        // Don't call gameStart() here - it creates infinite recursion
-        // The game will continue to the next round when a new game is started
     }
 
+    async function gameStart(roomCode) {
+        try {
+            let game = await Game.findOne({ roomCode });
+            if (!game) return;
 
-    function gameStart() {
-        wordToDraw = null;
-        wordOptions = [];
-        
-        // Check if we've completed all rounds
-        if (roundNumber >= totalRounds) {
-            console.log("END OF GAME - All rounds completed!");
-            io.sockets.emit('gameOver', scoreBoard);
-            return;
-        }
-        
-        if (playerIndex < players.length) {
-            chosenPlayer = players[playerIndex].getPlayerName();
-            console.log(`Round ${roundNumber + 1}/${totalRounds} - Player ${playerIndex + 1}/${players.length}: ${chosenPlayer}`);
-
-            for (let i = 0; i < 3; i++) {
-                var genWord = random_word_gen();
-                if (!wordOptions.includes(genWord)) {
-                    wordOptions.push(genWord);
-                } else {
-                    wordOptions.push(random_word_gen());
-                }
+            if (game.roundNumber >= game.totalRounds) {
+                const finalScores = [...game.scoreBoard].sort((a, b) => b[1] - a[1]);
+                io.to(roomCode).emit('gameOver', finalScores);
+                return;
             }
-            io.sockets.emit('chosenPlayer', [chosenPlayer, roundNumber]);
-            
-            // Only send word list to the current drawing player
-            players.forEach(player => {
-                if (player.getPlayerName() === chosenPlayer) {
-                    player.getPlayerSocID().emit('wordList', [wordOptions, roundNumber]);
+
+            if (game.playerIndex < game.players.length) {
+                const chosenPlayer = game.players[game.playerIndex].playerName;
+                const state = getRoomState(roomCode);
+                state.wordOptions = [];
+                for (let i = 0; i < 3; i++) {
+                    state.wordOptions.push(random_word_gen());
                 }
-            });
-            playerIndex++; // Increment after setting up the round
-            Fun();
-        } else {
-            // All players have drawn in this round, move to next round
-            playerIndex = 0;
-            roundNumber++;
-            console.log(`Round ${roundNumber} completed. Starting round ${roundNumber + 1}...`);
-            gameStart(); // Start next round
+                
+                game = await Game.findOneAndUpdate(
+                    { roomCode },
+                    { $set: { chosenPlayer }, $inc: { playerIndex: 1 } },
+                    { new: true }
+                );
+
+                io.to(roomCode).emit('chosenPlayer', [game.chosenPlayer, game.roundNumber]);
+                const player = game.players.find(p => p.playerName === game.chosenPlayer);
+                if (player) {
+                    io.to(player.socID).emit('wordList', [state.wordOptions, game.roundNumber]);
+                }
+
+                Fun(roomCode);
+            } else {
+                await Game.updateOne({ roomCode }, { $set: { playerIndex: 0 }, $inc: { roundNumber: 1 } });
+                gameStart(roomCode);
+            }
+        } catch (err) {
+            console.error(err.message);
         }
     }
 
@@ -498,17 +432,22 @@ io.on('connection', socket => {
 
 
 
-// Start the server
-const port = 3000;
+// Start the server only after DB connection success
+const port = process.env.PORT || 3000;
+
+connectDB()
+  .then(() => {
+    isDbConnected = true;
+    server.listen(port, () => {
+      console.log(`Listening on port ${port}...`);
+      console.log(`Open -> http://localhost:${port} to play :)`)
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to connect to MongoDB. Server not started.');
+  });
 
 // Serve React app for all routes
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'client', 'build', 'index.html'));
-});
-
-
-
-server.listen(port, () => {
-    console.log(`Listening on port ${port}...`);
-    console.log(`Open -> http://localhost:${port} to play :)`)
 });

@@ -1,7 +1,8 @@
 import React from 'react';
 import './HostScreen.css';
+import PlayerList from './PlayerList';
 
-const HostScreen = ({ onStartGame, roomCode }) => {
+const HostScreen = ({ onStartGame, roomCode, players }) => {
   return (
     <div className="host-screen">
       <div className="host-container">
@@ -16,11 +17,14 @@ const HostScreen = ({ onStartGame, roomCode }) => {
               <p className="room-tip">Share this code with friends to join!</p>
             </div>
           )}
+
+          <PlayerList players={players} />
           
           <div className="start-game-section">
             <button 
               onClick={onStartGame}
               className="start-game-btn"
+              disabled={players.length < 2}
             >
               🚀 Start Game
             </button>

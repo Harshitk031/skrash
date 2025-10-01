@@ -5,6 +5,7 @@ import PlayerList from './PlayerList';
 import './GameScreen.css';
 
 const GameScreen = ({
+  roomCode,
   playerName,
   isHost,
   canDraw,
@@ -29,6 +30,7 @@ const GameScreen = ({
 }) => {
   const [chatInput, setChatInput] = useState('');
   const [wordDisplay, setWordDisplay] = useState('');
+  const [lastVote, setLastVote] = useState(null);
 
   useEffect(() => {
     if (canDraw) {
@@ -40,6 +42,18 @@ const GameScreen = ({
       setWordDisplay("Word: ");
     }
   }, [canDraw, guessWord, wordCount]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const handleVote = ({ playerName: voter, direction }) => {
+      setLastVote({ voter, direction });
+      setTimeout(() => setLastVote(null), 1500);
+    };
+    socket.on('vote', handleVote);
+    return () => {
+      socket.off('vote', handleVote);
+    };
+  }, [socket]);
 
   const handleChatSubmit = (message) => {
     if (message && message.trim().length > 0) {
@@ -77,6 +91,7 @@ const GameScreen = ({
           {/* Canvas Area */}
           <div className="canvas-container">
             <Canvas
+              roomCode={roomCode}
               canDraw={canDraw}
               penColor={penColor}
               brushSize={brushSize}
@@ -141,6 +156,11 @@ const GameScreen = ({
               >
                 <img src="/images/thumbsdown.gif" alt="Thumbs Down" />
               </button>
+              {lastVote && (
+                <div className="vote-indicator">
+                  {lastVote.voter} voted {lastVote.direction === 'up' ? '👍' : '👎'}
+                </div>
+              )}
             </div>
           )}
 

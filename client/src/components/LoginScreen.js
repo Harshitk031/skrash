@@ -6,6 +6,7 @@ const LoginScreen = ({ onLogin }) => {
   const [roomCode, setRoomCode] = useState('');
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [error, setError] = useState('');
 
   const generateRoomCode = () => {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -24,12 +25,6 @@ const LoginScreen = ({ onLogin }) => {
     if (playerName.trim() && roomCode.trim()) {
       setIsJoiningRoom(true);
       onLogin(playerName, roomCode, 'join');
-    }
-  };
-
-  const handleJoinPublic = () => {
-    if (playerName.trim()) {
-      onLogin(playerName, null, 'public');
     }
   };
 
@@ -76,19 +71,6 @@ const LoginScreen = ({ onLogin }) => {
           <div className="room-options">
             <h3>Choose Game Mode:</h3>
             
-            {/* Public Room */}
-            <div className="room-option">
-              <h4>🌍 Public Room</h4>
-              <p>Join random players worldwide</p>
-              <button 
-                onClick={handleJoinPublic}
-                disabled={!playerName.trim()}
-                className="btn btn-primary"
-              >
-                Join Public Room
-              </button>
-            </div>
-
             {/* Create Private Room */}
             <div className="room-option">
               <h4>🏠 Create Private Room</h4>
@@ -123,6 +105,12 @@ const LoginScreen = ({ onLogin }) => {
                   Join Room
                 </button>
               </div>
+              {isJoiningRoom && (
+                <div className="joining-room">
+                  <div className="loading-spinner"></div>
+                  <p>Joining room...</p>
+                </div>
+              )}
             </div>
           </div>
 

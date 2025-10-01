@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import './Canvas.css';
 
-const Canvas = ({ canDraw, penColor, brushSize, socket, onBrushSizeChange }) => {
+const Canvas = ({ roomCode, canDraw, penColor, brushSize, socket, onBrushSizeChange }) => {
   const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
@@ -61,18 +61,12 @@ const Canvas = ({ canDraw, penColor, brushSize, socket, onBrushSizeChange }) => 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
 
-    const handlePenColor = (color) => {
-      // This will be handled by the parent component
-    };
-
     socket.on('otherPOS', handleOtherPosition);
     socket.on('clearCanvas', handleClearCanvas);
-    socket.on('penColor', handlePenColor);
 
     return () => {
       socket.off('otherPOS', handleOtherPosition);
       socket.off('clearCanvas', handleClearCanvas);
-      socket.off('penColor', handlePenColor);
     };
   }, [socket, penColor, brushSize]);
 
@@ -105,10 +99,7 @@ const Canvas = ({ canDraw, penColor, brushSize, socket, onBrushSizeChange }) => 
     setIsDrawing(true);
     setLastPos(pos);
     
-    // Emit start paint event
-    if (socket) {
-      socket.emit('startPaint', true);
-    }
+    // startPaint removed; drawing sync handled via 'position'
   };
 
   const draw = (pos) => {
@@ -131,7 +122,8 @@ const Canvas = ({ canDraw, penColor, brushSize, socket, onBrushSizeChange }) => 
 
     // Emit position to other players with all necessary data
     if (socket) {
-      socket.emit('position', { 
+      socket.emit('position', {
+        roomCode,
         x: pos.x, 
         y: pos.y, 
         lastX: lastPos.x,
@@ -149,10 +141,7 @@ const Canvas = ({ canDraw, penColor, brushSize, socket, onBrushSizeChange }) => 
     
     setIsDrawing(false);
     
-    // Emit stop paint event
-    if (socket) {
-      socket.emit('startPaint', false);
-    }
+    // startPaint removed
   };
 
   const handleMouseDown = (e) => {

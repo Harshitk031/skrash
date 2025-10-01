@@ -1,7 +1,8 @@
 import React from 'react';
 import './WaitingScreen.css';
+import PlayerList from './PlayerList';
 
-const WaitingScreen = ({ roomCode }) => {
+const WaitingScreen = ({ roomCode, players }) => {
   return (
     <div className="waiting-screen">
       <div className="waiting-container">
@@ -16,6 +17,8 @@ const WaitingScreen = ({ roomCode }) => {
               <p className="room-tip">Share this code with friends to join!</p>
             </div>
           )}
+
+          <PlayerList players={players} />
           
           <div className="loading-animation">
             <div className="spinner"></div>

@@ -48,8 +48,8 @@ A modern, React-based multiplayer drawing and guessing game built with Socket.IO
    ```
 
 5. **Open your browser**
-   - Backend: http://localhost:3000
-   - Frontend: http://localhost:3001
+   - App: http://localhost:5000 (server serves the React build in prod)
+   - Dev: React dev server via `npm run client` proxies to `http://localhost:5000`
 
 ## 🏗️ Project Structure
 
@@ -140,7 +140,8 @@ npm run build
 ## 🔧 Configuration
 
 ### Environment Variables
-- `PORT`: Server port (default: 3000)
+- `PORT`: Server port (default: 5000)
+- `MONGODB_URI`: MongoDB connection string
 - `NODE_ENV`: Environment (development/production)
 
 ### Game Settings

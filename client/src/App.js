@@ -35,6 +35,7 @@ function App() {
   const [scoreBoard, setScoreBoard] = useState([]);
   const [winners, setWinners] = useState([]);
   const [countdownInterval, setCountdownInterval] = useState(null);
+  const [loginErrorTick, setLoginErrorTick] = useState(0);
 
   const playSound = useCallback((src) => {
     if (!audioMute) {
@@ -45,38 +46,57 @@ function App() {
 
   useEffect(() => {
     // Socket event listeners
-    socket.on('welcom', (msg) => {
+    socket.on('welcome', (msg) => {
       console.log(msg);
     });
 
-    socket.on('hostPlayer', (boolVal) => {
-      setIsHost(boolVal);
-      if (boolVal) {
-        setGameState('host');
-      }
-    });
 
-    socket.on('gameStarted', () => {
+    socket.on('gameStarted', (game) => {
       console.log("GAME STARTED!!");
       setGameState('game');
+      setPlayers(game.players.map(p => ({ name: p.playerName, score: p.score })));
       // Clear chat messages for new game
       setChatMessages([]);
     });
 
-    socket.on('newPlayerJoined', (newPlayerName) => {
-      playSound('/sfx/joinGame.mp3');
-      console.log(newPlayerName, " joined 👋🏻");
-      addChatMessage('Server', newPlayerName + " joined 👋🏻", "green");
-      addPlayer(newPlayerName, 0);
+    socket.on('roomCreated', (game) => {
+      setPlayers(game.players.map(p => ({ name: p.playerName, score: p.score })));
+      const me = game.players.find(p => p.socID === socket.id);
+      if (me && me.isRoomOwner) {
+        setIsHost(true);
+        setGameState('host');
+      } else {
+        setGameState('waiting');
+      }
     });
 
-    socket.on('playersList', (playersList) => {
-      const pList = JSON.parse(playersList);
-      for (const player in pList) {
-        if (player !== playerName) {
-          addPlayer(player, pList[player]);
+    socket.on('playerListUpdate', (newPlayers) => {
+        const newPlayerList = newPlayers.map(p => ({ name: p.playerName, score: p.score }));
+        
+        // Detect if a player has joined or left
+        if (newPlayerList.length > players.length) {
+            const newPlayer = newPlayerList.find(p => !players.some(op => op.name === p.name));
+            if (newPlayer) {
+                playSound('/sfx/joinGame.mp3');
+                addChatMessage('Server', `${newPlayer.name} joined 👋🏻`, "green");
+            }
+        } else if (newPlayerList.length < players.length) {
+            const leftPlayer = players.find(p => !newPlayerList.some(np => np.name === p.name));
+            if (leftPlayer) {
+                playSound('/sfx/leaveGame.mp3');
+                addChatMessage('Server', `${leftPlayer.name} left :(`, "red");
+            }
         }
-      }
+
+        setPlayers(newPlayerList);
+    });
+
+    socket.on('gameStateUpdate', (gameState) => {
+        setGameState('game');
+        setChosenPlayer(gameState.currentDrawer);
+        setWordCount(gameState.wordHint.length / 2);
+        setRound(gameState.round);
+        setPlayers(gameState.players);
     });
 
     socket.on('wordCount', (guessWordCount) => {
@@ -210,12 +230,6 @@ function App() {
       }
     });
 
-    socket.on('playerLeft', (leftPlayer) => {
-      playSound("/sfx/leaveGame.mp3");
-      removePlayer(leftPlayer);
-      addChatMessage('Server', leftPlayer + " left :(", "red");
-    });
-
     socket.on('scoreBoard', (newScoreBoard) => {
       setScoreBoard(newScoreBoard);
       updatePlayerScores(newScoreBoard);
@@ -236,6 +250,19 @@ function App() {
       setGameState('gameOver');
     });
 
+    socket.on('roomClosed', () => {
+      alert('Room was closed by the host');
+      socket.disconnect();
+      setGameState('login');
+      window.location.reload();
+    });
+
+    socket.on('serverError', (message) => {
+      console.error('Server error:', message);
+      alert(message);
+      setLoginErrorTick(t => t + 1);
+    });
+
     socket.on('disconnect', () => {
       socket.disconnect();
       setGameState('login');
@@ -243,11 +270,10 @@ function App() {
     });
 
     return () => {
-      socket.off('welcom');
-      socket.off('hostPlayer');
+      socket.off('welcome');
       socket.off('gameStarted');
-      socket.off('newPlayerJoined');
-      socket.off('playersList');
+      socket.off('serverError');
+      socket.off('roomClosed');
       socket.off('wordCount');
       socket.off('allGuessed');
       socket.off('chatContent');
@@ -270,15 +296,8 @@ function App() {
         clearInterval(countdownInterval);
       }
     };
-  }, [playerName, canDraw, guessedPlayer, guessWord, atleastOneGuessed, countdownInterval, chosenPlayer, round, playSound]);
+  }, [playerName, canDraw, guessedPlayer, guessWord, atleastOneGuessed, countdownInterval, chosenPlayer, round, playSound, players]);
 
-  const addPlayer = (playerName, score) => {
-    setPlayers(prev => [...prev, { name: playerName, score }]);
-  };
-
-  const removePlayer = (playerName) => {
-    setPlayers(prev => prev.filter(p => p.name !== playerName));
-  };
 
   const updatePlayerScores = (newScoreBoard) => {
     setPlayers(prev => prev.map(player => {
@@ -302,29 +321,23 @@ function App() {
     setRoomCode(code || '');
     
     socket.connect();
-    addPlayer(name, 0);
     
-    // Emit room information based on mode
     if (mode === 'create') {
       socket.emit('createRoom', { playerName: name, roomCode: code });
     } else if (mode === 'join') {
       socket.emit('joinRoom', { playerName: name, roomCode: code });
-    } else {
-      // Public room
-      socket.emit('playerName', name);
     }
-    
     setGameState('waiting');
   };
 
   const handleStartGame = () => {
-    socket.emit('startGame');
+    socket.emit('startGame', roomCode);
     setGameState('game');
   };
 
   const handleWordSelection = (word, autoSelected = false) => {
     if (!autoSelected) {
-      socket.emit('chosenWord', word);
+      socket.emit('chosenWord', { roomCode, word });
     }
     setGuessWord(word);
     setGameState('game');
@@ -333,13 +346,13 @@ function App() {
   const renderScreen = () => {
     switch (gameState) {
       case 'login':
-        return <LoginScreen onLogin={handleLogin} />;
+        return <LoginScreen onLogin={handleLogin} errorTick={loginErrorTick} />;
       case 'waiting':
-        return <WaitingScreen roomCode={roomCode} />;
+        return <WaitingScreen roomCode={roomCode} players={players} />;
       case 'host':
-        return <HostScreen onStartGame={handleStartGame} roomCode={roomCode} />;
+        return <HostScreen onStartGame={handleStartGame} roomCode={roomCode} players={players} />;
       case 'gameOver':
-        return <GameOverScreen winners={winners} />;
+        return <GameOverScreen winners={winners} onStartNewGame={() => window.location.reload()} />;
       case 'wordSelection':
         return (
           <WordSelectionScreen
@@ -352,6 +365,7 @@ function App() {
       case 'game':
         return (
           <GameScreen
+            roomCode={roomCode}
             playerName={playerName}
             isHost={isHost}
             canDraw={canDraw}
@@ -370,16 +384,16 @@ function App() {
             onBrushSizeChange={setBrushSize}
             onSendChat={(message) => {
               if (message.length > 0) {
-                socket.emit('updateText', [playerName, message]);
+                socket.emit('updateText', { roomCode, playerName, message });
               }
             }}
             onClearCanvas={() => {
               if (canDraw) {
-                socket.emit('clearCanvas');
+                socket.emit('clearCanvas', { roomCode });
               }
             }}
             onVote={(direction) => {
-              socket.emit('vote', [playerName, direction]);
+              socket.emit('vote', { roomCode, playerName, direction });
             }}
             socket={socket}
             chosenPlayer={chosenPlayer}
